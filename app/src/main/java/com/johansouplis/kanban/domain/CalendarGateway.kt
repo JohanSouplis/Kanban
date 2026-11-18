@@ -7,11 +7,13 @@ data class EventSpec(
     val leadMinutes: Int,
 )
 
+/** What a write to an existing event did. UNAVAILABLE means the calendar was not reached, so the event is untouched. */
+enum class CalendarWrite { APPLIED, GONE, UNAVAILABLE }
+
 interface CalendarGateway {
     fun insert(calendarId: Long, spec: EventSpec): Long?
 
-    /** Returns false when the event no longer exists. */
-    fun update(eventId: Long, spec: EventSpec): Boolean
+    fun update(eventId: Long, spec: EventSpec): CalendarWrite
 
-    fun delete(eventId: Long)
+    fun delete(eventId: Long): CalendarWrite
 }

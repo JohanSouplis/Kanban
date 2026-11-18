@@ -36,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,18 +67,18 @@ fun TaskEditor(
     onDismiss: () -> Unit,
 ) {
     val zone = ZoneId.systemDefault()
-    var title by remember { mutableStateOf(initial.title) }
-    var description by remember { mutableStateOf(initial.description) }
-    var column by remember { mutableStateOf(initial.column) }
-    var hasReminder by remember { mutableStateOf(initial.reminder != null) }
-    var dateTime by remember {
+    var title by rememberSaveable { mutableStateOf(initial.title) }
+    var description by rememberSaveable { mutableStateOf(initial.description) }
+    var column by rememberSaveable { mutableStateOf(initial.column) }
+    var hasReminder by rememberSaveable { mutableStateOf(initial.reminder != null) }
+    var dateTime by rememberSaveable {
         mutableStateOf(
             initial.reminder?.let { LocalDateTime.ofInstant(Instant.ofEpochMilli(it.startMillis), zone) }
                 ?: LocalDateTime.now().truncatedTo(ChronoUnit.HOURS).plusHours(1)
         )
     }
-    var leadMinutes by remember { mutableStateOf(initial.reminder?.leadMinutes ?: 15) }
-    var calendarId by remember { mutableStateOf(initial.reminder?.calendarId ?: lastCalendarId) }
+    var leadMinutes by rememberSaveable { mutableStateOf(initial.reminder?.leadMinutes ?: 15) }
+    var calendarId by rememberSaveable { mutableStateOf(initial.reminder?.calendarId ?: lastCalendarId) }
     val calendar = calendars.find { it.id == calendarId } ?: calendars.firstOrNull()
 
     fun result(): Task {

@@ -32,7 +32,13 @@ class TaskStoreTest {
                     reminder = Reminder(1_763_000_000_000, 1440, 7),
                     event = CalendarEvent(42, 7),
                 ),
-                Task("c", "Impôts", column = Column.DONE, reminder = Reminder(1_700_000_000_000, 0, 3)),
+                Task(
+                    id = "c",
+                    title = "Impôts",
+                    column = Column.DONE,
+                    reminder = Reminder(1_700_000_000_000, 0, 3),
+                    event = CalendarEvent(43, 3, pending = true),
+                ),
             ),
             lastCalendarId = 7,
         )

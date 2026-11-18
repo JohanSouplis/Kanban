@@ -44,7 +44,10 @@ class BoardViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun refreshCalendars() = serially { loadCalendars() }
+    fun refreshCalendars() {
+        serially { loadCalendars() }
+        mutate { board.reconcile(it) }
+    }
 
     fun save(task: Task) = mutate(task.reminder?.calendarId) { board.save(it, task) }
 
@@ -62,6 +65,7 @@ class BoardViewModel(app: Application) : AndroidViewModel(app) {
     private fun mutate(usedCalendarId: Long? = null, change: (List<Task>) -> List<Task>) = serially {
         val current = _state.value
         val next = current.copy(tasks = change(current.tasks), lastCalendarId = usedCalendarId ?: current.lastCalendarId)
+        if (next == current) return@serially
         _state.value = next
         store.save(Snapshot(next.tasks, next.lastCalendarId))
     }

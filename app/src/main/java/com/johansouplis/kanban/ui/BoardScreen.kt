@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -39,6 +40,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,10 +52,18 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.johansouplis.kanban.data.CalendarInfo
+import com.johansouplis.kanban.data.taskFromJson
+import com.johansouplis.kanban.data.taskToJson
 import com.johansouplis.kanban.domain.Column
 import com.johansouplis.kanban.domain.Task
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import java.util.UUID
+
+private val TaskSaver = Saver<Task?, String>(
+    save = { task -> task?.let { taskToJson(it).toString() } },
+    restore = { taskFromJson(JSONObject(it)) },
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,10 +72,13 @@ fun BoardScreen(viewModel: BoardViewModel = viewModel()) {
     val columns = Column.entries
     val pager = rememberPagerState { columns.size }
     val scope = rememberCoroutineScope()
-    var editing by remember { mutableStateOf<Task?>(null) }
-    var deleting by remember { mutableStateOf<Task?>(null) }
+    var editing by rememberSaveable(stateSaver = TaskSaver) { mutableStateOf(null) }
+    var deleting by rememberSaveable(stateSaver = TaskSaver) { mutableStateOf(null) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         viewModel.refreshCalendars()
+    }
+    val requestPermission = {
+        permissionLauncher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
     }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.refreshCalendars() }
 
@@ -120,9 +134,7 @@ fun BoardScreen(viewModel: BoardViewModel = viewModel()) {
             calendars = state.calendars,
             lastCalendarId = state.lastCalendarId,
             hasCalendarPermission = state.hasCalendarPermission,
-            onRequestPermission = {
-                permissionLauncher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
-            },
+            onRequestPermission = requestPermission,
             onSave = {
                 viewModel.save(it)
                 editing = null
@@ -136,10 +148,17 @@ fun BoardScreen(viewModel: BoardViewModel = viewModel()) {
             onDismissRequest = { deleting = null },
             title = { Text("Supprimer la tâche ?") },
             text = {
-                Text(
-                    if (task.event != null) "« ${task.title} » et son rappel dans l'agenda seront supprimés."
-                    else "« ${task.title} » sera supprimée."
-                )
+                when {
+                    task.event == null -> Text("« ${task.title} » sera supprimée.")
+                    state.hasCalendarPermission -> Text("« ${task.title} » et son rappel dans l'agenda seront supprimés.")
+                    else -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            "« ${task.title} » sera supprimée, mais son rappel restera dans l'agenda : " +
+                                "l'appli n'a pas accès à l'agenda. Autorisez l'accès pour le supprimer aussi."
+                        )
+                        Button(onClick = requestPermission) { Text("Autoriser l'accès à l'agenda") }
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -176,7 +195,11 @@ private fun TaskCard(
                 }
                 task.reminder?.let { reminder ->
                     val where = calendar?.name?.let { " · $it" }.orEmpty()
-                    val status = if (task.event == null && task.column != Column.DONE) " (hors agenda)" else ""
+                    val status = when {
+                        task.event?.pending == true -> " (agenda à mettre à jour)"
+                        task.event == null && task.column != Column.DONE -> " (hors agenda)"
+                        else -> ""
+                    }
                     Text(
                         "Rappel ${formatDateTime(reminder.startMillis)}$where$status",
                         style = MaterialTheme.typography.labelMedium,

@@ -25,14 +25,16 @@ private class FakeCalendar : CalendarGateway {
         return id
     }
 
-    override fun update(eventId: Long, spec: EventSpec): Boolean {
-        val stored = events[eventId] ?: return false
+    override fun update(eventId: Long, spec: EventSpec): CalendarWrite {
+        if (!available) return CalendarWrite.UNAVAILABLE
+        val stored = events[eventId] ?: return CalendarWrite.GONE
         events[eventId] = stored.copy(spec = spec)
-        return true
+        return CalendarWrite.APPLIED
     }
 
-    override fun delete(eventId: Long) {
-        events.remove(eventId)
+    override fun delete(eventId: Long): CalendarWrite {
+        if (!available) return CalendarWrite.UNAVAILABLE
+        return if (events.remove(eventId) != null) CalendarWrite.APPLIED else CalendarWrite.GONE
     }
 }
 
@@ -180,5 +182,84 @@ class BoardTest {
 
         assertEquals("Appeler le garage", saved.title)
         assertNull(saved.event)
+    }
+
+    @Test
+    fun `validating without calendar access leaves the event to delete once access is back`() {
+        val tasks = board.save(emptyList(), task())
+        calendar.available = false
+
+        val done = board.move(tasks, "t1", Column.DONE)
+        assertEquals(1, calendar.events.size)
+
+        calendar.available = true
+        val reconciled = board.reconcile(done).only()
+
+        assertNull(reconciled.event)
+        assertTrue(calendar.events.isEmpty())
+    }
+
+    @Test
+    fun `reopening a task validated without access reuses its event instead of duplicating it`() {
+        val tasks = board.save(emptyList(), task())
+        val eventId = tasks.only().event!!.id
+        calendar.available = false
+        val done = board.move(tasks, "t1", Column.DONE)
+
+        calendar.available = true
+        val reopened = board.move(done, "t1", Column.TODO).only()
+
+        assertEquals(setOf(eventId), calendar.events.keys)
+        assertEquals(eventId, reopened.event!!.id)
+    }
+
+    @Test
+    fun `an edit made without access reaches the same event once access is back`() {
+        val tasks = board.save(emptyList(), task())
+        val eventId = tasks.only().event!!.id
+        calendar.available = false
+
+        val edited = board.save(tasks, tasks.only().copy(title = "Appeler le garage Renault"))
+        assertEquals("Appeler le garage", calendar.events.getValue(eventId).spec.title)
+
+        calendar.available = true
+        board.reconcile(edited)
+
+        assertEquals(setOf(eventId), calendar.events.keys)
+        assertEquals("Appeler le garage Renault", calendar.events.getValue(eventId).spec.title)
+    }
+
+    @Test
+    fun `a calendar change made without access moves the event once access is back`() {
+        val tasks = board.save(emptyList(), task())
+        calendar.available = false
+        val moved = board.save(tasks, task(calendarId = PARTAGE).copy(event = tasks.only().event))
+
+        calendar.available = true
+        val reconciled = board.reconcile(moved).only()
+
+        assertEquals(listOf(PARTAGE), calendar.events.values.map { it.calendarId })
+        assertEquals(PARTAGE, reconciled.event!!.calendarId)
+    }
+
+    @Test
+    fun `reconciling without access changes nothing`() {
+        val tasks = board.save(emptyList(), task())
+        calendar.available = false
+        val done = board.move(tasks, "t1", Column.DONE)
+
+        assertEquals(done, board.reconcile(done))
+        assertEquals(1, calendar.events.size)
+    }
+
+    @Test
+    fun `deleting a task without access removes the task but not its event`() {
+        val tasks = board.save(emptyList(), task())
+        calendar.available = false
+
+        val remaining = board.delete(tasks, "t1")
+
+        assertTrue(remaining.isEmpty())
+        assertEquals(1, calendar.events.size)
     }
 }

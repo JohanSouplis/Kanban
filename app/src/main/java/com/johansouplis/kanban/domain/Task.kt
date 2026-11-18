@@ -8,7 +8,8 @@ enum class Column(val label: String) {
 
 data class Reminder(val startMillis: Long, val leadMinutes: Int, val calendarId: Long)
 
-data class CalendarEvent(val id: Long, val calendarId: Long)
+/** [pending] means the calendar has not received the task's latest change: an update or a deletion is still owed. */
+data class CalendarEvent(val id: Long, val calendarId: Long, val pending: Boolean = false)
 
 data class Task(
     val id: String,

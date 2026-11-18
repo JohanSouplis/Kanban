@@ -19,6 +19,8 @@ L'appli n'utilise pas de compte Google directement. Elle écrit dans les agendas
 - Valider une tâche (« Fait ») supprime son événement. La ramener dans une autre colonne recrée l'événement si le rappel est encore à venir. Supprimer une tâche supprime aussi son événement.
 - Si l'événement a été supprimé à la main dans l'agenda, l'appli le recrée à la prochaine modification de la tâche.
 - Sans l'autorisation « Agenda », le tableau fonctionne normalement. Le formulaire propose alors un bouton pour l'accorder.
+- Si l'accès à l'agenda est retiré alors qu'une tâche a déjà un événement, valider ou modifier la tâche ne touche pas l'agenda. La carte affiche « agenda à mettre à jour », et l'appli applique le changement dès que l'accès revient.
+- Supprimer une tâche sans accès à l'agenda laisse son événement dans l'agenda. La confirmation le signale et propose d'autoriser l'accès d'abord.
 
 ## Installer l'APK
 

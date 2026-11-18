@@ -9,6 +9,7 @@ import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
 import android.provider.CalendarContract.Reminders
 import com.johansouplis.kanban.domain.CalendarGateway
+import com.johansouplis.kanban.domain.CalendarWrite
 import com.johansouplis.kanban.domain.EventSpec
 import java.util.TimeZone
 
@@ -46,7 +47,7 @@ class CalendarRepository(private val context: Context) : CalendarGateway {
         id?.also { insertReminder(it, spec.leadMinutes) }
     }
 
-    override fun update(eventId: Long, spec: EventSpec): Boolean = guarded {
+    override fun update(eventId: Long, spec: EventSpec): CalendarWrite = guarded {
         val rows = resolver.update(
             Events.CONTENT_URI,
             eventValues(spec),
@@ -57,12 +58,14 @@ class CalendarRepository(private val context: Context) : CalendarGateway {
             resolver.delete(Reminders.CONTENT_URI, "${Reminders.EVENT_ID} = ?", arrayOf(eventId.toString()))
             insertReminder(eventId, spec.leadMinutes)
         }
-        rows > 0
-    } ?: false
+        written(rows)
+    } ?: CalendarWrite.UNAVAILABLE
 
-    override fun delete(eventId: Long) {
-        guarded { resolver.delete(ContentUris.withAppendedId(Events.CONTENT_URI, eventId), null, null) }
-    }
+    override fun delete(eventId: Long): CalendarWrite = guarded {
+        written(resolver.delete(ContentUris.withAppendedId(Events.CONTENT_URI, eventId), null, null))
+    } ?: CalendarWrite.UNAVAILABLE
+
+    private fun written(rows: Int) = if (rows > 0) CalendarWrite.APPLIED else CalendarWrite.GONE
 
     private fun eventValues(spec: EventSpec) = ContentValues().apply {
         put(Events.TITLE, spec.title)
