@@ -39,4 +39,4 @@ Prérequis : JDK 17 ou plus et le SDK Android (plateforme 35). Indiquer le SDK d
 
 L'APK release est signé avec `keystore/release.jks` (alias `kanban`, mot de passe `kanbanrelease`), versionné dans le dépôt car l'appli est destinée au sideload personnel.
 
-La CI GitHub Actions lance les tests et construit l'APK à chaque push. Sur un tag `v*`, elle attache l'APK à une release GitHub.
+La CI GitHub Actions lance les tests et construit l'APK à chaque push. Sur `main`, elle publie la release `v<versionName>` avec l'APK `kanban.apk` : changer `versionName` dans `app/build.gradle.kts` pour sortir une nouvelle version.
