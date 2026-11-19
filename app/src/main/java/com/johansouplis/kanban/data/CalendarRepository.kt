@@ -9,13 +9,20 @@ import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
 import android.provider.CalendarContract.Reminders
 import com.johansouplis.kanban.domain.CalendarGateway
-import com.johansouplis.kanban.domain.CalendarWrite
 import com.johansouplis.kanban.domain.EventSpec
+import com.johansouplis.kanban.domain.FoundEvent
+import com.johansouplis.kanban.domain.Insertion
 import java.util.TimeZone
 
-data class CalendarInfo(val id: Long, val name: String, val account: String, val color: Int)
+/** [id] is this phone's row id. [key] names the same calendar on every phone. */
+data class CalendarInfo(val id: Long, val key: String, val name: String, val account: String, val color: Int)
 
 private const val EVENT_DURATION_MILLIS = 30 * 60 * 1000L
+
+fun eventMarker(taskId: String) = "kanban:$taskId"
+
+fun eventDescription(description: String, taskId: String) =
+    listOf(description, eventMarker(taskId)).filter { it.isNotBlank() }.joinToString("\n\n")
 
 class CalendarRepository(private val context: Context) : CalendarGateway {
     private val resolver get() = context.contentResolver
@@ -25,51 +32,69 @@ class CalendarRepository(private val context: Context) : CalendarGateway {
             context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
         }
 
-    fun writableCalendars(): List<CalendarInfo> = guarded {
+    fun writableCalendars(): List<CalendarInfo> = guarded { calendars(visibleOnly = true) }.orEmpty()
+
+    /** Only calendars this phone may modify: an event it cannot delete would stay owed forever. */
+    override fun find(taskId: String): List<FoundEvent>? = guarded {
+        val keys = calendars(visibleOnly = false).associate { it.id to it.key }
+        resolver.query(
+            Events.CONTENT_URI,
+            arrayOf(Events._ID, Events.CALENDAR_ID),
+            "${Events.DESCRIPTION} LIKE ? AND ${Events.DELETED} = 0",
+            arrayOf("%${eventMarker(taskId)}%"),
+            null,
+        )?.use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    keys[cursor.getLong(1)]?.let { add(FoundEvent(cursor.getLong(0), it)) }
+                }
+            }
+        }
+    }
+
+    override fun insert(calendarKey: String, taskId: String, spec: EventSpec): Insertion = guarded {
+        val calendar = writableCalendars().find { it.key == calendarKey } ?: return@guarded Insertion.NO_CALENDAR
+        val values = eventValues(taskId, spec).apply { put(Events.CALENDAR_ID, calendar.id) }
+        val id = resolver.insert(Events.CONTENT_URI, values)?.lastPathSegment?.toLongOrNull() ?: return@guarded Insertion.UNAVAILABLE
+        insertReminder(id, spec.leadMinutes)
+        Insertion.INSERTED
+    } ?: Insertion.UNAVAILABLE
+
+    override fun update(eventId: Long, taskId: String, spec: EventSpec): Boolean = guarded {
+        resolver.update(ContentUris.withAppendedId(Events.CONTENT_URI, eventId), eventValues(taskId, spec), null, null)
+        resolver.delete(Reminders.CONTENT_URI, "${Reminders.EVENT_ID} = ?", arrayOf(eventId.toString()))
+        insertReminder(eventId, spec.leadMinutes)
+    } != null
+
+    override fun delete(eventId: Long): Boolean = guarded {
+        resolver.delete(ContentUris.withAppendedId(Events.CONTENT_URI, eventId), null, null)
+    } != null
+
+    /**
+     * A Google calendar's address (`xxx@group.calendar.google.com`) is the same on every phone that syncs it,
+     * so it keys the shared calendar. A calendar that is not synced keeps a per-phone key.
+     */
+    private fun calendars(visibleOnly: Boolean): List<CalendarInfo> =
         resolver.query(
             Calendars.CONTENT_URI,
-            arrayOf(Calendars._ID, Calendars.CALENDAR_DISPLAY_NAME, Calendars.ACCOUNT_NAME, Calendars.CALENDAR_COLOR),
-            "${Calendars.CALENDAR_ACCESS_LEVEL} >= ? AND ${Calendars.VISIBLE} = 1",
+            arrayOf(Calendars._ID, Calendars.OWNER_ACCOUNT, Calendars.CALENDAR_DISPLAY_NAME, Calendars.ACCOUNT_NAME, Calendars.CALENDAR_COLOR, Calendars._SYNC_ID),
+            "${Calendars.CALENDAR_ACCESS_LEVEL} >= ?" + if (visibleOnly) " AND ${Calendars.VISIBLE} = 1" else "",
             arrayOf(Calendars.CAL_ACCESS_CONTRIBUTOR.toString()),
             "${Calendars.ACCOUNT_NAME}, ${Calendars.CALENDAR_DISPLAY_NAME}",
         )?.use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
-                    add(CalendarInfo(cursor.getLong(0), cursor.getString(1).orEmpty(), cursor.getString(2).orEmpty(), cursor.getInt(3)))
+                    val id = cursor.getLong(0)
+                    val account = cursor.getString(3).orEmpty()
+                    val key = listOf(cursor.getString(1), cursor.getString(5)).firstOrNull { it?.contains('@') == true } ?: "local:$account:$id"
+                    add(CalendarInfo(id, key, cursor.getString(2).orEmpty(), account, cursor.getInt(4)))
                 }
             }
-        }
-    }.orEmpty()
+        }.orEmpty()
 
-    override fun insert(calendarId: Long, spec: EventSpec): Long? = guarded {
-        val values = eventValues(spec).apply { put(Events.CALENDAR_ID, calendarId) }
-        val id = resolver.insert(Events.CONTENT_URI, values)?.lastPathSegment?.toLongOrNull()
-        id?.also { insertReminder(it, spec.leadMinutes) }
-    }
-
-    override fun update(eventId: Long, spec: EventSpec): CalendarWrite = guarded {
-        val rows = resolver.update(
-            Events.CONTENT_URI,
-            eventValues(spec),
-            "${Events._ID} = ? AND ${Events.DELETED} = 0",
-            arrayOf(eventId.toString()),
-        )
-        if (rows > 0) {
-            resolver.delete(Reminders.CONTENT_URI, "${Reminders.EVENT_ID} = ?", arrayOf(eventId.toString()))
-            insertReminder(eventId, spec.leadMinutes)
-        }
-        written(rows)
-    } ?: CalendarWrite.UNAVAILABLE
-
-    override fun delete(eventId: Long): CalendarWrite = guarded {
-        written(resolver.delete(ContentUris.withAppendedId(Events.CONTENT_URI, eventId), null, null))
-    } ?: CalendarWrite.UNAVAILABLE
-
-    private fun written(rows: Int) = if (rows > 0) CalendarWrite.APPLIED else CalendarWrite.GONE
-
-    private fun eventValues(spec: EventSpec) = ContentValues().apply {
+    private fun eventValues(taskId: String, spec: EventSpec) = ContentValues().apply {
         put(Events.TITLE, spec.title)
-        put(Events.DESCRIPTION, spec.description)
+        put(Events.DESCRIPTION, eventDescription(spec.description, taskId))
         put(Events.DTSTART, spec.startMillis)
         put(Events.DTEND, spec.startMillis + EVENT_DURATION_MILLIS)
         put(Events.EVENT_TIMEZONE, TimeZone.getDefault().id)

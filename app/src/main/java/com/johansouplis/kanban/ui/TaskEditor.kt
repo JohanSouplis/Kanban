@@ -60,7 +60,7 @@ fun TaskEditor(
     initial: Task,
     isNew: Boolean,
     calendars: List<CalendarInfo>,
-    lastCalendarId: Long?,
+    lastCalendarKey: String?,
     hasCalendarPermission: Boolean,
     onRequestPermission: () -> Unit,
     onSave: (Task) -> Unit,
@@ -78,13 +78,16 @@ fun TaskEditor(
         )
     }
     var leadMinutes by rememberSaveable { mutableStateOf(initial.reminder?.leadMinutes ?: 15) }
-    var calendarId by rememberSaveable { mutableStateOf(initial.reminder?.calendarId ?: lastCalendarId) }
-    val calendar = calendars.find { it.id == calendarId } ?: calendars.firstOrNull()
+    var chosenKey by rememberSaveable { mutableStateOf(initial.reminder?.calendarKey) }
+    val calendarKey = chosenKey
+        ?: lastCalendarKey?.takeIf { key -> calendars.any { it.key == key } }
+        ?: calendars.firstOrNull()?.key
+    val calendar = calendars.find { it.key == calendarKey }
 
     fun result(): Task {
         val reminder = when {
-            !hasCalendarPermission || calendar == null -> initial.reminder
-            hasReminder -> Reminder(dateTime.atZone(zone).toInstant().toEpochMilli(), leadMinutes, calendar.id)
+            !hasCalendarPermission || calendarKey == null -> initial.reminder
+            hasReminder -> Reminder(dateTime.atZone(zone).toInstant().toEpochMilli(), leadMinutes, calendarKey)
             else -> null
         }
         return initial.copy(title = title.trim(), description = description.trim(), column = column, reminder = reminder)
@@ -124,7 +127,7 @@ fun TaskEditor(
                         Text("Autorisez l'accès à l'agenda pour ajouter un rappel.", style = MaterialTheme.typography.bodyMedium)
                         Button(onClick = onRequestPermission) { Text("Autoriser l'accès à l'agenda") }
                     }
-                    calendar == null -> Text(
+                    calendarKey == null -> Text(
                         "Aucun agenda modifiable sur ce téléphone. Synchronisez un agenda Google dans l'application Google Agenda.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -144,12 +147,12 @@ fun TaskEditor(
                             )
                             Dropdown(
                                 label = "Agenda",
-                                selected = calendarLabel(calendar),
+                                selected = calendar?.let(::calendarLabel) ?: "Agenda absent de ce téléphone",
                                 options = calendars,
                                 optionLabel = ::calendarLabel,
-                                onSelect = { calendarId = it.id },
+                                onSelect = { chosenKey = it.key },
                                 leading = { ColorDot(it.color) },
-                                selectedLeading = { ColorDot(calendar.color) },
+                                selectedLeading = calendar?.let { { ColorDot(it.color) } },
                             )
                         }
                     }

@@ -6,10 +6,16 @@ enum class Column(val label: String) {
     DONE("Fait"),
 }
 
-data class Reminder(val startMillis: Long, val leadMinutes: Int, val calendarId: Long)
+/**
+ * [calendarKey] names the calendar the same way on every phone (a Google calendar's id), unlike its local row id.
+ */
+data class Reminder(val startMillis: Long, val leadMinutes: Int, val calendarKey: String)
 
-/** [pending] means the calendar has not received the task's latest change: an update or a deletion is still owed. */
-data class CalendarEvent(val id: Long, val calendarId: Long, val pending: Boolean = false)
+/**
+ * Which calendar holds the task's event and which member created it there.
+ * Another phone may not have received the event from Google yet, so only [placedBy] treats its absence as a deletion.
+ */
+data class EventPlacement(val calendarKey: String, val placedBy: String)
 
 data class Task(
     val id: String,
@@ -17,7 +23,8 @@ data class Task(
     val description: String = "",
     val column: Column = Column.TODO,
     val reminder: Reminder? = null,
-    val event: CalendarEvent? = null,
+    val event: EventPlacement? = null,
+    val createdAt: Long = 0,
 )
 
 val LEAD_TIMES_MINUTES = listOf(0, 5, 15, 30, 60, 24 * 60)

@@ -7,13 +7,25 @@ data class EventSpec(
     val leadMinutes: Int,
 )
 
-/** What a write to an existing event did. UNAVAILABLE means the calendar was not reached, so the event is untouched. */
-enum class CalendarWrite { APPLIED, GONE, UNAVAILABLE }
+/** An event on this phone that carries a task's marker. [id] is local to this phone. */
+data class FoundEvent(val id: Long, val calendarKey: String)
 
+enum class Insertion { INSERTED, NO_CALENDAR, UNAVAILABLE }
+
+/** Events are tied to a task by a marker written in the event itself, so Google sync carries the link to every phone. */
 interface CalendarGateway {
-    fun insert(calendarId: Long, spec: EventSpec): Long?
+    /** Null when the calendar cannot be reached (no permission). */
+    fun find(taskId: String): List<FoundEvent>?
 
-    fun update(eventId: Long, spec: EventSpec): CalendarWrite
+    fun insert(calendarKey: String, taskId: String, spec: EventSpec): Insertion
 
-    fun delete(eventId: Long): CalendarWrite
+    fun update(eventId: Long, taskId: String, spec: EventSpec): Boolean
+
+    fun delete(eventId: Long): Boolean
+}
+
+interface TaskRepository {
+    fun put(task: Task)
+
+    fun delete(id: String)
 }

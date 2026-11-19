@@ -1,265 +1,374 @@
 package com.johansouplis.kanban.domain
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 private const val NOW = 1_000_000L
 private const val HOUR = 3_600_000L
-private const val PERSO = 1L
-private const val PARTAGE = 2L
+private const val PARIGOTS = "parigots@group.calendar.google.com"
+private const val PERSO = "johan@gmail.com"
 
-private class FakeCalendar : CalendarGateway {
-    data class Stored(val calendarId: Long, val spec: EventSpec)
+/** One phone's calendar provider. [sharedWith] stands in for Google sync, which copies events between phones later. */
+private class FakeCalendar(private val keys: Set<String> = setOf(PARIGOTS, PERSO)) : CalendarGateway {
+    data class Stored(val calendarKey: String, val taskId: String, val spec: EventSpec)
 
     val events = mutableMapOf<Long, Stored>()
     var available = true
     private var nextId = 100L
 
-    override fun insert(calendarId: Long, spec: EventSpec): Long? {
+    fun syncFrom(other: FakeCalendar) {
+        events.clear()
+        other.events.values.forEach { events[nextId++] = it }
+    }
+
+    fun of(taskId: String) = events.values.filter { it.taskId == taskId }
+
+    override fun find(taskId: String): List<FoundEvent>? {
         if (!available) return null
-        val id = nextId++
-        events[id] = Stored(calendarId, spec)
-        return id
+        return events.filterValues { it.taskId == taskId }.map { (id, stored) -> FoundEvent(id, stored.calendarKey) }
     }
 
-    override fun update(eventId: Long, spec: EventSpec): CalendarWrite {
-        if (!available) return CalendarWrite.UNAVAILABLE
-        val stored = events[eventId] ?: return CalendarWrite.GONE
+    override fun insert(calendarKey: String, taskId: String, spec: EventSpec): Insertion {
+        if (!available) return Insertion.UNAVAILABLE
+        if (calendarKey !in keys) return Insertion.NO_CALENDAR
+        events[nextId++] = Stored(calendarKey, taskId, spec)
+        return Insertion.INSERTED
+    }
+
+    override fun update(eventId: Long, taskId: String, spec: EventSpec): Boolean {
+        if (!available) return false
+        val stored = events[eventId] ?: return false
         events[eventId] = stored.copy(spec = spec)
-        return CalendarWrite.APPLIED
+        return true
     }
 
-    override fun delete(eventId: Long): CalendarWrite {
-        if (!available) return CalendarWrite.UNAVAILABLE
-        return if (events.remove(eventId) != null) CalendarWrite.APPLIED else CalendarWrite.GONE
+    override fun delete(eventId: Long): Boolean {
+        if (!available) return false
+        events.remove(eventId)
+        return true
+    }
+}
+
+/** The shared board in Firestore. Phones read it back through [Board.receive]. */
+private class FakeCloud : TaskRepository {
+    val tasks = linkedMapOf<String, Task>()
+
+    override fun put(task: Task) {
+        tasks[task.id] = task
+    }
+
+    override fun delete(id: String) {
+        tasks.remove(id)
     }
 }
 
 class BoardTest {
-    private val calendar = FakeCalendar()
-    private val board = Board(calendar) { NOW }
+    private val cloud = FakeCloud()
+    private val johanCalendar = FakeCalendar()
+    private val partnerCalendar = FakeCalendar()
+    private val johan = Board(johanCalendar, cloud, me = "johan") { NOW }
+    private val partner = Board(partnerCalendar, cloud, me = "partner") { NOW }
 
-    private fun task(reminderAt: Long? = NOW + HOUR, calendarId: Long = PERSO) = Task(
+    private fun task(reminderAt: Long? = NOW + HOUR, calendarKey: String = PARIGOTS) = Task(
         id = "t1",
         title = "Appeler le garage",
         description = "Pneus hiver",
-        reminder = reminderAt?.let { Reminder(it, leadMinutes = 15, calendarId = calendarId) },
+        reminder = reminderAt?.let { Reminder(it, leadMinutes = 15, calendarKey = calendarKey) },
     )
 
-    private fun List<Task>.only() = single()
+    private fun Board.pull() = receive(cloud.tasks.values.toList())
+
+    private fun Board.only() = tasks.single()
 
     @Test
-    fun `saving a task with a future reminder creates the event in the chosen calendar`() {
-        val saved = board.save(emptyList(), task()).only()
+    fun `saving a task with a future reminder creates its event in the chosen calendar`() {
+        johan.save(task())
 
-        val stored = calendar.events.getValue(saved.event!!.id)
-        assertEquals(PERSO, stored.calendarId)
+        val stored = johanCalendar.of("t1").single()
+        assertEquals(PARIGOTS, stored.calendarKey)
         assertEquals(EventSpec("Appeler le garage", "Pneus hiver", NOW + HOUR, 15), stored.spec)
+        assertEquals(EventPlacement(PARIGOTS, "johan"), cloud.tasks.getValue("t1").event)
     }
 
     @Test
     fun `saving a task without reminder creates no event`() {
-        val saved = board.save(emptyList(), task(reminderAt = null)).only()
+        johan.save(task(reminderAt = null))
 
-        assertNull(saved.event)
-        assertTrue(calendar.events.isEmpty())
+        assertEquals("Appeler le garage", cloud.tasks.getValue("t1").title)
+        assertTrue(johanCalendar.events.isEmpty())
     }
 
     @Test
     fun `validating a task deletes its event`() {
-        val tasks = board.save(emptyList(), task())
+        johan.save(task())
 
-        val done = board.move(tasks, "t1", Column.DONE).only()
+        johan.move("t1", Column.DONE)
 
-        assertEquals(Column.DONE, done.column)
-        assertNull(done.event)
-        assertTrue(calendar.events.isEmpty())
+        assertEquals(Column.DONE, cloud.tasks.getValue("t1").column)
+        assertNull(cloud.tasks.getValue("t1").event)
+        assertTrue(johanCalendar.events.isEmpty())
     }
 
     @Test
     fun `moving between open columns keeps the same event`() {
-        val tasks = board.save(emptyList(), task())
-        val eventId = tasks.only().event!!.id
+        johan.save(task())
+        val eventIds = johanCalendar.events.keys.toSet()
 
-        val doing = board.move(tasks, "t1", Column.DOING).only()
+        johan.move("t1", Column.DOING)
 
-        assertEquals(eventId, doing.event!!.id)
-        assertEquals(setOf(eventId), calendar.events.keys)
+        assertEquals(eventIds, johanCalendar.events.keys)
     }
 
     @Test
     fun `reopening a done task with a future reminder recreates the event`() {
-        val done = board.move(board.save(emptyList(), task()), "t1", Column.DONE)
+        johan.save(task())
+        johan.move("t1", Column.DONE)
 
-        val reopened = board.move(done, "t1", Column.TODO).only()
+        johan.move("t1", Column.TODO)
 
-        assertNotNull(reopened.event)
-        assertEquals(setOf(reopened.event!!.id), calendar.events.keys)
+        assertEquals(1, johanCalendar.of("t1").size)
     }
 
     @Test
     fun `reopening a done task whose reminder is past creates no event`() {
-        val done = listOf(task(reminderAt = NOW - HOUR).copy(column = Column.DONE))
+        johan.save(task(reminderAt = NOW - HOUR).copy(column = Column.DONE))
 
-        val reopened = board.move(done, "t1", Column.TODO).only()
+        johan.move("t1", Column.TODO)
 
-        assertNull(reopened.event)
-        assertTrue(calendar.events.isEmpty())
+        assertTrue(johanCalendar.events.isEmpty())
+        assertNull(cloud.tasks.getValue("t1").event)
     }
 
     @Test
     fun `editing a task updates its event`() {
-        val tasks = board.save(emptyList(), task())
-        val edited = tasks.only().copy(title = "Appeler le garage Renault")
+        johan.save(task())
 
-        val saved = board.save(tasks, edited).only()
+        johan.save(johan.only().copy(title = "Appeler le garage Renault"))
 
-        assertEquals(tasks.only().event, saved.event)
-        assertEquals("Appeler le garage Renault", calendar.events.getValue(saved.event!!.id).spec.title)
+        assertEquals("Appeler le garage Renault", johanCalendar.of("t1").single().spec.title)
     }
 
     @Test
     fun `changing the calendar moves the event`() {
-        val tasks = board.save(emptyList(), task())
-        val oldId = tasks.only().event!!.id
+        johan.save(task())
 
-        val moved = board.save(tasks, task(calendarId = PARTAGE).copy(event = tasks.only().event)).only()
+        johan.save(task(calendarKey = PERSO).copy(event = johan.only().event))
 
-        assertEquals(PARTAGE, moved.event!!.calendarId)
-        assertEquals(setOf(moved.event!!.id), calendar.events.keys)
-        assertTrue(moved.event!!.id != oldId)
-        assertEquals(PARTAGE, calendar.events.getValue(moved.event!!.id).calendarId)
+        assertEquals(listOf(PERSO), johanCalendar.of("t1").map { it.calendarKey })
+        assertEquals(EventPlacement(PERSO, "johan"), cloud.tasks.getValue("t1").event)
     }
 
     @Test
     fun `removing the reminder deletes the event`() {
-        val tasks = board.save(emptyList(), task())
+        johan.save(task())
 
-        val saved = board.save(tasks, tasks.only().copy(reminder = null)).only()
+        johan.save(johan.only().copy(reminder = null))
 
-        assertNull(saved.event)
-        assertTrue(calendar.events.isEmpty())
+        assertTrue(johanCalendar.events.isEmpty())
+        assertNull(cloud.tasks.getValue("t1").event)
     }
 
     @Test
-    fun `an event deleted outside the app is recreated on edit`() {
-        val tasks = board.save(emptyList(), task())
-        calendar.events.clear()
+    fun `an event deleted by hand on the phone that created it is recreated on edit`() {
+        johan.save(task())
+        johanCalendar.events.clear()
 
-        val saved = board.save(tasks, tasks.only().copy(title = "Nouveau titre")).only()
+        johan.save(johan.only().copy(title = "Nouveau titre"))
 
-        assertEquals("Nouveau titre", calendar.events.getValue(saved.event!!.id).spec.title)
-    }
-
-    @Test
-    fun `validating a task whose event was deleted outside the app just clears it`() {
-        val tasks = board.save(emptyList(), task())
-        calendar.events.clear()
-
-        val done = board.move(tasks, "t1", Column.DONE).only()
-
-        assertNull(done.event)
+        assertEquals("Nouveau titre", johanCalendar.of("t1").single().spec.title)
     }
 
     @Test
     fun `deleting a task deletes its event`() {
-        val tasks = board.save(emptyList(), task())
+        johan.save(task())
 
-        val remaining = board.delete(tasks, "t1")
+        johan.delete("t1")
 
-        assertTrue(remaining.isEmpty())
-        assertTrue(calendar.events.isEmpty())
+        assertTrue(cloud.tasks.isEmpty())
+        assertTrue(johanCalendar.events.isEmpty())
     }
 
     @Test
-    fun `without calendar access the task is still saved`() {
-        calendar.available = false
+    fun `a task validated on the other phone before Google synced the event still loses its event`() {
+        johan.save(task())
+        partner.pull()
 
-        val saved = board.save(emptyList(), task()).only()
+        partner.move("t1", Column.DONE)
+        johan.pull()
 
-        assertEquals("Appeler le garage", saved.title)
-        assertNull(saved.event)
+        assertTrue(johanCalendar.events.isEmpty())
+        assertEquals(Column.DONE, johan.only().column)
     }
 
     @Test
-    fun `validating without calendar access leaves the event to delete once access is back`() {
-        val tasks = board.save(emptyList(), task())
-        calendar.available = false
+    fun `a task validated on the other phone after Google synced the event deletes it on both phones`() {
+        johan.save(task())
+        partnerCalendar.syncFrom(johanCalendar)
+        partner.pull()
 
-        val done = board.move(tasks, "t1", Column.DONE)
-        assertEquals(1, calendar.events.size)
+        partner.move("t1", Column.DONE)
+        johan.pull()
 
-        calendar.available = true
-        val reconciled = board.reconcile(done).only()
+        assertTrue(partnerCalendar.events.isEmpty())
+        assertTrue(johanCalendar.events.isEmpty())
+    }
 
-        assertNull(reconciled.event)
-        assertTrue(calendar.events.isEmpty())
+    @Test
+    fun `a task deleted on the other phone loses its event here`() {
+        johan.save(task())
+        partner.pull()
+
+        partner.delete("t1")
+        johan.pull()
+
+        assertTrue(johan.tasks.isEmpty())
+        assertTrue(johanCalendar.events.isEmpty())
+    }
+
+    @Test
+    fun `receiving a task with a reminder never inserts an event`() {
+        johan.save(task())
+
+        partner.pull()
+
+        assertTrue(partnerCalendar.events.isEmpty())
+    }
+
+    @Test
+    fun `receiving a task the other phone could not put in the calendar inserts nothing here`() {
+        johanCalendar.available = false
+        johan.save(task())
+
+        partner.pull()
+
+        assertTrue(partnerCalendar.events.isEmpty())
+        assertNull(cloud.tasks.getValue("t1").event)
+    }
+
+    @Test
+    fun `editing on the other phone before Google synced the event updates it here without duplicating it`() {
+        johan.save(task())
+        partner.pull()
+
+        partner.save(partner.only().copy(title = "Appeler le garage Renault"))
+        johan.pull()
+
+        assertTrue(partnerCalendar.events.isEmpty())
+        assertEquals("Appeler le garage Renault", johanCalendar.of("t1").single().spec.title)
+        assertEquals(EventPlacement(PARIGOTS, "johan"), cloud.tasks.getValue("t1").event)
+    }
+
+    @Test
+    fun `reopening on the other phone a task validated here gives it one event`() {
+        johan.save(task())
+        johan.move("t1", Column.DONE)
+        partner.pull()
+
+        partner.move("t1", Column.TODO)
+        johan.pull()
+
+        assertEquals(1, partnerCalendar.of("t1").size)
+        assertTrue(johanCalendar.events.isEmpty())
+        assertEquals(EventPlacement(PARIGOTS, "partner"), cloud.tasks.getValue("t1").event)
+    }
+
+    @Test
+    fun `a calendar missing on this phone leaves the task without event and nothing pending`() {
+        val phone = Board(FakeCalendar(keys = setOf(PERSO)), cloud, me = "partner") { NOW }
+
+        phone.save(task())
+
+        assertNull(cloud.tasks.getValue("t1").event)
+        assertTrue(phone.pending.isEmpty())
+    }
+
+    @Test
+    fun `without calendar access the task is saved and its event created once access is back`() {
+        johanCalendar.available = false
+
+        johan.save(task())
+        assertEquals("Appeler le garage", cloud.tasks.getValue("t1").title)
+        assertEquals(setOf("t1"), johan.pending)
+
+        johanCalendar.available = true
+        johan.reconcile()
+
+        assertEquals(1, johanCalendar.of("t1").size)
+        assertTrue(johan.pending.isEmpty())
+    }
+
+    @Test
+    fun `validating without calendar access deletes the event once access is back`() {
+        johan.save(task())
+        johanCalendar.available = false
+
+        johan.move("t1", Column.DONE)
+        assertEquals(1, johanCalendar.events.size)
+
+        johanCalendar.available = true
+        johan.reconcile()
+
+        assertTrue(johanCalendar.events.isEmpty())
+        assertNull(cloud.tasks.getValue("t1").event)
     }
 
     @Test
     fun `reopening a task validated without access reuses its event instead of duplicating it`() {
-        val tasks = board.save(emptyList(), task())
-        val eventId = tasks.only().event!!.id
-        calendar.available = false
-        val done = board.move(tasks, "t1", Column.DONE)
+        johan.save(task())
+        val eventIds = johanCalendar.events.keys.toSet()
+        johanCalendar.available = false
+        johan.move("t1", Column.DONE)
 
-        calendar.available = true
-        val reopened = board.move(done, "t1", Column.TODO).only()
+        johanCalendar.available = true
+        johan.move("t1", Column.TODO)
 
-        assertEquals(setOf(eventId), calendar.events.keys)
-        assertEquals(eventId, reopened.event!!.id)
-    }
-
-    @Test
-    fun `an edit made without access reaches the same event once access is back`() {
-        val tasks = board.save(emptyList(), task())
-        val eventId = tasks.only().event!!.id
-        calendar.available = false
-
-        val edited = board.save(tasks, tasks.only().copy(title = "Appeler le garage Renault"))
-        assertEquals("Appeler le garage", calendar.events.getValue(eventId).spec.title)
-
-        calendar.available = true
-        board.reconcile(edited)
-
-        assertEquals(setOf(eventId), calendar.events.keys)
-        assertEquals("Appeler le garage Renault", calendar.events.getValue(eventId).spec.title)
-    }
-
-    @Test
-    fun `a calendar change made without access moves the event once access is back`() {
-        val tasks = board.save(emptyList(), task())
-        calendar.available = false
-        val moved = board.save(tasks, task(calendarId = PARTAGE).copy(event = tasks.only().event))
-
-        calendar.available = true
-        val reconciled = board.reconcile(moved).only()
-
-        assertEquals(listOf(PARTAGE), calendar.events.values.map { it.calendarId })
-        assertEquals(PARTAGE, reconciled.event!!.calendarId)
+        assertEquals(eventIds, johanCalendar.events.keys)
     }
 
     @Test
     fun `reconciling without access changes nothing`() {
-        val tasks = board.save(emptyList(), task())
-        calendar.available = false
-        val done = board.move(tasks, "t1", Column.DONE)
+        johan.save(task())
+        johanCalendar.available = false
+        johan.move("t1", Column.DONE)
+        val stored = cloud.tasks.toMap()
 
-        assertEquals(done, board.reconcile(done))
-        assertEquals(1, calendar.events.size)
+        johan.reconcile()
+
+        assertEquals(stored, cloud.tasks)
+        assertEquals(1, johanCalendar.events.size)
+        assertEquals(setOf("t1"), johan.pending)
     }
 
     @Test
-    fun `deleting a task without access removes the task but not its event`() {
-        val tasks = board.save(emptyList(), task())
-        calendar.available = false
+    fun `deleting a task without access deletes its event once access is back`() {
+        johan.save(task())
+        johanCalendar.available = false
 
-        val remaining = board.delete(tasks, "t1")
+        johan.delete("t1")
+        assertTrue(cloud.tasks.isEmpty())
+        assertEquals(1, johanCalendar.events.size)
 
-        assertTrue(remaining.isEmpty())
-        assertEquals(1, calendar.events.size)
+        johanCalendar.available = true
+        johan.reconcile()
+
+        assertTrue(johanCalendar.events.isEmpty())
+    }
+
+    @Test
+    fun `a change received without access is applied to this phone's event once access is back`() {
+        johan.save(task())
+        partner.pull()
+        johanCalendar.available = false
+
+        partner.move("t1", Column.DONE)
+        johan.pull()
+        assertEquals(1, johanCalendar.events.size)
+
+        johanCalendar.available = true
+        johan.reconcile()
+
+        assertTrue(johanCalendar.events.isEmpty())
     }
 }

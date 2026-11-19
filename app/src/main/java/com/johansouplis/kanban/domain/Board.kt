@@ -1,55 +1,104 @@
 package com.johansouplis.kanban.domain
 
 /**
- * A task owns a calendar event exactly when it has a reminder and is not done.
- * Every change reconciles the event with that rule, so a missing or stale event heals itself.
- * When the calendar is unreachable the task keeps its event, marked pending, and [reconcile] finishes the job later.
+ * One phone's view of the shared board.
+ *
+ * Rule: a task has one event when it has a reminder and is not done, and none otherwise.
+ * The phone where the user acts applies the rule in full and records in the task where the event lives.
+ * A change received from the other phone only updates or deletes the events already on this phone and never inserts one:
+ * Google sync is slow, so the other phone may simply not have received the event yet, and inserting there would duplicate it.
+ * Task ids whose events could not be reached (no calendar permission) stay [pending] until [reconcile] succeeds.
  */
 class Board(
     private val calendar: CalendarGateway,
+    private val repository: TaskRepository,
+    private val me: String,
+    pending: Set<String> = emptySet(),
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    fun save(tasks: List<Task>, task: Task): List<Task> {
-        val synced = sync(task)
-        return if (tasks.any { it.id == task.id }) {
-            tasks.map { if (it.id == task.id) synced else it }
+    var tasks: List<Task> = emptyList()
+        private set
+
+    var pending: Set<String> = pending
+        private set
+
+    fun save(task: Task) = act(task.id, task)
+
+    fun move(id: String, column: Column) {
+        tasks.find { it.id == id }?.let { act(id, it.copy(column = column)) }
+    }
+
+    fun delete(id: String) = act(id, null)
+
+    fun reconcile() = pending.forEach { id -> act(id, tasks.find { it.id == id }) }
+
+    /** Takes the board as stored remotely. Includes this phone's own writes, which are already known and so skipped. */
+    fun receive(remote: List<Task>) {
+        val before = tasks.associateBy { it.id }
+        tasks = remote
+        remote.filter { before[it.id] != it }.forEach { converge(it.id, it) }
+        (before.keys - remote.map { it.id }.toSet()).forEach { converge(it, null) }
+    }
+
+    private fun act(id: String, task: Task?) {
+        pending = pending - id
+        val kept = converge(id, task)
+        val result = when {
+            task == null -> null
+            kept == null -> task
+            else -> place(task, kept)
+        }
+        val previous = tasks.find { it.id == id }
+        if (result == previous) return
+        if (result == null) {
+            tasks = tasks.filterNot { it.id == id }
+            repository.delete(id)
         } else {
-            tasks + synced
+            tasks = if (previous == null) tasks + result else tasks.map { if (it.id == id) result else it }
+            repository.put(result)
         }
     }
 
-    fun move(tasks: List<Task>, id: String, column: Column): List<Task> =
-        tasks.map { if (it.id == id) sync(it.copy(column = column)) else it }
-
-    /** The task goes away even when its event cannot be removed. The caller warns the user before asking for that. */
-    fun delete(tasks: List<Task>, id: String): List<Task> {
-        tasks.find { it.id == id }?.event?.let { calendar.delete(it.id) }
-        return tasks.filterNot { it.id == id }
+    /** Updates or deletes this phone's events for the task. Returns whether one was kept, or null when unreachable. */
+    private fun converge(id: String, task: Task?): Boolean? {
+        val found = calendar.find(id) ?: return unreachable(id)
+        val wanted = task?.wantedReminder()
+        val spec = if (task != null && wanted != null) task.spec(wanted) else null
+        var reached = true
+        var kept = false
+        for (event in found) {
+            val applied = if (spec != null && event.calendarKey == wanted?.calendarKey) {
+                kept = true
+                calendar.update(event.id, id, spec)
+            } else {
+                calendar.delete(event.id)
+            }
+            reached = reached && applied
+        }
+        return if (reached) kept else unreachable(id)
     }
 
-    fun reconcile(tasks: List<Task>): List<Task> =
-        tasks.map { if (it.event?.pending == true) sync(it) else it }
-
-    private fun sync(task: Task): Task {
-        val reminder = task.reminder
-        val event = task.event
-        if (reminder == null || task.column == Column.DONE || (event == null && reminder.startMillis <= now())) {
-            if (event == null || calendar.delete(event.id) != CalendarWrite.UNAVAILABLE) return task.copy(event = null)
-            return task.copy(event = event.copy(pending = true))
-        }
-        val spec = EventSpec(task.title, task.description, reminder.startMillis, reminder.leadMinutes)
-        if (event != null) {
-            if (event.calendarId == reminder.calendarId) {
-                when (calendar.update(event.id, spec)) {
-                    CalendarWrite.APPLIED -> return task.copy(event = event.copy(pending = false))
-                    CalendarWrite.UNAVAILABLE -> return task.copy(event = event.copy(pending = true))
-                    CalendarWrite.GONE -> Unit
-                }
-            } else if (calendar.delete(event.id) == CalendarWrite.UNAVAILABLE) {
-                return task.copy(event = event.copy(pending = true))
+    private fun place(task: Task, kept: Boolean): Task {
+        val wanted = task.wantedReminder() ?: return task.copy(event = null)
+        val placement = task.event?.takeIf { it.calendarKey == wanted.calendarKey }
+        return when {
+            kept -> task.copy(event = placement ?: EventPlacement(wanted.calendarKey, me))
+            placement != null && placement.placedBy != me -> task
+            wanted.startMillis <= now() -> task.copy(event = null)
+            else -> when (calendar.insert(wanted.calendarKey, task.id, task.spec(wanted))) {
+                Insertion.INSERTED -> task.copy(event = EventPlacement(wanted.calendarKey, me))
+                Insertion.NO_CALENDAR -> task.copy(event = null)
+                Insertion.UNAVAILABLE -> task.also { unreachable(task.id) }
             }
         }
-        val id = calendar.insert(reminder.calendarId, spec)
-        return task.copy(event = id?.let { CalendarEvent(it, reminder.calendarId) })
+    }
+
+    private fun unreachable(id: String): Nothing? {
+        pending = pending + id
+        return null
     }
 }
+
+private fun Task.wantedReminder(): Reminder? = reminder?.takeIf { column != Column.DONE }
+
+private fun Task.spec(reminder: Reminder) = EventSpec(title, description, reminder.startMillis, reminder.leadMinutes)

@@ -4,7 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import com.johansouplis.kanban.ui.BoardScreen
+import com.johansouplis.kanban.ui.KanbanApp
 import com.johansouplis.kanban.ui.KanbanTheme
 
 class MainActivity : ComponentActivity() {
@@ -13,7 +13,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             KanbanTheme {
-                BoardScreen()
+                KanbanApp()
             }
         }
     }

@@ -1,0 +1,57 @@
+rules_version = '2';
+
+// Kanban partagé. À coller dans la console Firebase : Firestore Database > Règles.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function board(boardId) {
+      return /databases/$(database)/documents/boards/$(boardId);
+    }
+
+    function isMember(boardId) {
+      return signedIn() && request.auth.uid in get(board(boardId)).data.members;
+    }
+
+    // Un code mène à un seul tableau. On peut lire un code qu'on connaît, jamais lister les codes.
+    match /joinCodes/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['boardId'])
+        && getAfter(board(request.resource.data.boardId)).data.joinCode == code
+        && request.auth.uid in getAfter(board(request.resource.data.boardId)).data.members;
+    }
+
+    match /boards/{boardId} {
+      allow get: if signedIn() && request.auth.uid in resource.data.members;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['joinCode', 'members', 'createdAt'])
+        && request.resource.data.joinCode is string
+        && request.resource.data.members == [request.auth.uid];
+      // Rejoindre : la seule modification permise est l'ajout de son propre uid aux membres.
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+        && request.resource.data.members.toSet() == resource.data.members.toSet().union([request.auth.uid].toSet())
+        && request.resource.data.members.size() <= 10;
+
+      match /tasks/{taskId} {
+        allow read, delete: if isMember(boardId);
+        allow create, update: if isMember(boardId) && validTask(request.resource.data);
+      }
+    }
+
+    function validTask(task) {
+      return task.keys().hasOnly(['title', 'description', 'column', 'reminder', 'event', 'createdAt', 'updatedAt', 'updatedBy'])
+        && task.title is string && task.title.size() <= 500
+        && task.description is string && task.description.size() <= 10000
+        && task.column in ['TODO', 'DOING', 'DONE']
+        && (task.reminder == null || task.reminder is map)
+        && (task.event == null || task.event is map)
+        && task.createdAt is int
+        && task.updatedAt == request.time
+        && task.updatedBy == request.auth.uid;
+    }
+  }
+}
