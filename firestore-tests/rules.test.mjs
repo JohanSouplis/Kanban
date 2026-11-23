@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment, assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, getDoc, getDocs, collection, setDoc, updateDoc, deleteDoc, writeBatch, arrayUnion, arrayRemove, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, setDoc, updateDoc, deleteDoc, writeBatch, arrayUnion, arrayRemove, serverTimestamp, Bytes } from 'firebase/firestore';
 
 let env;
 
@@ -92,4 +92,44 @@ test('tasks must be well formed and signed by their writer', async () => {
   await assertFails(setDoc(doc(d, 'boards/b9/tasks/b'), task('johan', { column: 'ARCHIVED' })));
   await assertFails(setDoc(doc(d, 'boards/b9/tasks/c'), task('johan', { extra: true })));
   await assertFails(setDoc(doc(d, 'boards/b9/tasks/d'), task('johan', { updatedAt: 5 })));
+});
+
+test('a task may carry a backlog rank and up to ten attachments', async () => {
+  await createBoard('johan', 'b10', 'BCD234');
+  const d = db('johan');
+  const attachment = (i) => ({ id: `f${i}`, name: `photo${i}.jpg`, mimeType: 'image/jpeg', size: 1000 });
+  const ten = Array.from({ length: 10 }, (_, i) => attachment(i));
+  await assertSucceeds(setDoc(doc(d, 'boards/b10/tasks/ok'), task('johan', { rank: 2.5, attachments: ten })));
+  await assertSucceeds(setDoc(doc(d, 'boards/b10/tasks/whole'), task('johan', { rank: 3, attachments: [] })));
+  await assertFails(setDoc(doc(d, 'boards/b10/tasks/a'), task('johan', { rank: 'premier' })));
+  await assertFails(setDoc(doc(d, 'boards/b10/tasks/b'), task('johan', { attachments: [...ten, attachment(10)] })));
+  await assertFails(setDoc(doc(d, 'boards/b10/tasks/c'), task('johan', { attachments: 'f1' })));
+});
+
+const file = (size) => ({ taskId: 't1', data: Bytes.fromUint8Array(new Uint8Array(size)) });
+
+test('a member stores, reads and deletes an attachment file', async () => {
+  await createBoard('johan', 'b11', 'EFG234');
+  await updateDoc(doc(db('partner'), 'boards', 'b11'), { members: arrayUnion('partner') });
+  await assertSucceeds(setDoc(doc(db('johan'), 'boards/b11/files/f1'), file(900000)));
+  await assertSucceeds(getDoc(doc(db('partner'), 'boards/b11/files/f1')));
+  await assertFails(setDoc(doc(db('partner'), 'boards/b11/files/f1'), file(10)));
+  await assertSucceeds(deleteDoc(doc(db('partner'), 'boards/b11/files/f1')));
+});
+
+test('a non-member can neither store, read nor delete attachment files', async () => {
+  await createBoard('johan', 'b12', 'HJK234');
+  await setDoc(doc(db('johan'), 'boards/b12/files/f1'), file(10));
+  await assertFails(setDoc(doc(db('mallory'), 'boards/b12/files/f2'), file(10)));
+  await assertFails(getDoc(doc(db('mallory'), 'boards/b12/files/f1')));
+  await assertFails(deleteDoc(doc(db('mallory'), 'boards/b12/files/f1')));
+});
+
+test('an attachment file must be small enough and well formed', async () => {
+  await createBoard('johan', 'b13', 'MNP234');
+  const d = db('johan');
+  await assertFails(setDoc(doc(d, 'boards/b13/files/big'), file(950001)));
+  await assertFails(setDoc(doc(d, 'boards/b13/files/a'), { taskId: 't1', data: 'pas des octets' }));
+  await assertFails(setDoc(doc(d, 'boards/b13/files/b'), { ...file(10), name: 'x' }));
+  await assertFails(setDoc(doc(d, 'boards/b13/files/c'), { data: file(10).data }));
 });

@@ -6,6 +6,7 @@ Pour reprendre dans une nouvelle conversation qui a le connecteur Firebase. Lire
 
 - **`main` (cc7962c), release `v1.0.0`** : appli locale. Un rappel crée un événement dans l'agenda Google choisi via `CalendarContract` ; valider la tâche le supprime. Testée par Johan sur son téléphone : l'événement est bien arrivé dans « Parigots v2 ».
 - **Branche `ccr-2423e9be-rt2xf0` (7c9ee56)** : version 1.1.0, tableau partagé entre Johan et sa copine (Android tous les deux) via Firebase. Le code est fini et les 34 tests JVM passent, mais `app/google-services.json` est un **faux** (`project_id: kanban-placeholder`). L'appli ne peut donc pas encore se connecter.
+- **Version 1.2.0 (code 3)** par-dessus la 1.1.0 : onglet Backlog (tâches à faire sans date, ordonnables par appui long), pièces jointes stockées dans Firestore, éditeur plein écran, annulation des déplacements. Republier `firestore.rules` avant de l'installer.
 - **Ne pas fusionner sur `main` avant d'avoir le vrai fichier.** Chaque push sur `main` fait publier par la CI la release `v<versionName>` avec l'APK (`.github/workflows/android.yml`). Avec le faux fichier, ce serait une 1.1.0 qui ne se connecte pas.
 
 ## Ce qu'il reste à faire

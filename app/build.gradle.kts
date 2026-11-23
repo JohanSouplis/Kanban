@@ -13,8 +13,8 @@ android {
         applicationId = "com.johansouplis.kanban"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     signingConfigs {
@@ -63,6 +63,7 @@ dependencies {
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+    implementation("sh.calvin.reorderable:reorderable:3.1.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")

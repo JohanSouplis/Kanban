@@ -40,16 +40,29 @@ service cloud.firestore {
         allow read, delete: if isMember(boardId);
         allow create, update: if isMember(boardId) && validTask(request.resource.data);
       }
+
+      // Contenu d'une pièce jointe, à part de la tâche pour que l'écoute des tâches ne le télécharge pas.
+      // Firestore limite un document à 1 Mio. Une pièce jointe ne change jamais : on la supprime et en ajoute une autre.
+      match /files/{fileId} {
+        allow read, delete: if isMember(boardId);
+        allow create: if isMember(boardId)
+          && request.resource.data.keys().hasOnly(['taskId', 'data'])
+          && request.resource.data.taskId is string
+          && request.resource.data.data is bytes
+          && request.resource.data.data.size() <= 950000;
+      }
     }
 
     function validTask(task) {
-      return task.keys().hasOnly(['title', 'description', 'column', 'reminder', 'event', 'createdAt', 'updatedAt', 'updatedBy'])
+      return task.keys().hasOnly(['title', 'description', 'column', 'reminder', 'event', 'createdAt', 'rank', 'attachments', 'updatedAt', 'updatedBy'])
         && task.title is string && task.title.size() <= 500
         && task.description is string && task.description.size() <= 10000
         && task.column in ['TODO', 'DOING', 'DONE']
         && (task.reminder == null || task.reminder is map)
         && (task.event == null || task.event is map)
         && task.createdAt is int
+        && (!('rank' in task) || task.rank is number)
+        && (!('attachments' in task) || (task.attachments is list && task.attachments.size() <= 10))
         && task.updatedAt == request.time
         && task.updatedBy == request.auth.uid;
     }

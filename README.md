@@ -4,10 +4,22 @@ Tableau Kanban personnel pour Android (Kotlin, Jetpack Compose, Material 3).
 
 ## Fonctionnement
 
-- Trois colonnes : **À faire**, **En cours**, **Fait**. Glisser horizontalement ou toucher un onglet pour changer de colonne.
-- Le bouton **+** crée une tâche : titre, description optionnelle, colonne et rappel optionnel.
-- Une carte se modifie en la touchant. Son menu permet de la déplacer ou de la supprimer, et **✓ Valider** l'envoie dans « Fait ».
+- Quatre onglets : **À faire**, **Backlog**, **En cours**, **Fait**. Glisser horizontalement ou toucher un onglet pour changer de colonne.
+- **À faire** contient les tâches qui ont une date prévue (leur rappel), de la plus proche à la plus lointaine. **Backlog** contient les tâches à faire sans date. Ce n'est pas une colonne enregistrée à part : retirer la date d'une tâche la renvoie au backlog, lui en donner une (**Planifier**) l'en sort.
+- Dans le backlog, un appui long sur une carte permet de la glisser plus haut ou plus bas. L'ordre est partagé entre les téléphones. Une tâche qui arrive dans le backlog (nouvelle, date retirée, ramenée d'« En cours » ou « Fait ») se place en bas.
+- Le bouton **+** crée une tâche dans l'onglet affiché : titre, description, pièces jointes, colonne et date prévue (rappel). Depuis « À faire », le rappel est proposé d'office.
+- Une carte se modifie en la touchant. Ses boutons **Planifier**, **Commencer** et **✓ Valider** la font avancer ; son menu permet de la déplacer, de retirer sa date ou de la supprimer. Un déplacement s'annule depuis le message en bas de l'écran.
 - Les tâches sont enregistrées dans Cloud Firestore (Firebase) et partagées entre les téléphones du tableau. Firestore garde une copie sur le téléphone : l'appli marche hors ligne et envoie les changements au retour du réseau.
+
+## Pièces jointes
+
+Le formulaire d'une tâche accepte des photos (galerie ou appareil photo) et des fichiers, visibles sur les deux téléphones. Toucher une pièce jointe l'ouvre dans l'appli adaptée du téléphone.
+
+- 10 pièces jointes au maximum par tâche.
+- Une photo est réduite (1600 px de côté au plus) et recompressée en JPEG jusqu'à 700 Ko. Un autre fichier (ou un GIF) est refusé au-delà de 900 Ko.
+- Les ajouts et retraits ne sont écrits qu'à l'enregistrement de la tâche. Supprimer une tâche supprime ses pièces jointes.
+- Le contenu est stocké dans Firestore (`boards/{id}/files/{pièce jointe}`), un document par fichier, d'où la limite proche du maximum d'1 Mio par document. Firebase Storage serait plus adapté mais exige le forfait payant Blaze pour un nouveau projet ; Firestore reste dans le forfait gratuit Spark (1 Gio stocké).
+- Les tâches ne contiennent que le nom, le type et la taille. Le contenu est téléchargé à la demande (vignette d'une photo à l'ouverture du formulaire, fichier quand on le touche), puis gardé dans le cache de Firestore : une pièce jointe jamais affichée sur ce téléphone n'est pas disponible hors ligne.
 
 ## Partage
 
@@ -61,6 +73,8 @@ Le dépôt contient un `app/google-services.json` factice (projet `kanban-placeh
 7. Recompiler (`./gradlew assembleRelease`) et installer le nouvel APK sur les deux téléphones.
 
 Les règles sont testées contre l'émulateur Firestore (JDK requis) : `cd firestore-tests && npm install && npm test`.
+
+**Mise à jour depuis la 1.1** : la 1.2 ajoute le rang du backlog, les pièces jointes et la collection `files`. Republier [`firestore.rules`](firestore.rules) (étape 4) avant d'installer la 1.2, sinon Firestore refuse ses écritures.
 
 ## Installer l'APK
 

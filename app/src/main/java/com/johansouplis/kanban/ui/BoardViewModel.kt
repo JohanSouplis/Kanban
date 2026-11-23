@@ -1,6 +1,8 @@
 package com.johansouplis.kanban.ui
 
 import android.app.Application
+import android.net.Uri
+import android.util.LruCache
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.firestore.ListenerRegistration
@@ -8,13 +10,17 @@ import com.johansouplis.kanban.data.BoardLink
 import com.johansouplis.kanban.data.CalendarInfo
 import com.johansouplis.kanban.data.CalendarRepository
 import com.johansouplis.kanban.data.FirestoreBoard
+import com.johansouplis.kanban.data.Import
 import com.johansouplis.kanban.data.LegacyBoard
 import com.johansouplis.kanban.data.LocalSettings
+import com.johansouplis.kanban.data.importAttachment
 import com.johansouplis.kanban.data.normalizeJoinCode
+import com.johansouplis.kanban.domain.Attachment
 import com.johansouplis.kanban.domain.Board
 import com.johansouplis.kanban.domain.Column
 import com.johansouplis.kanban.domain.EventSpec
 import com.johansouplis.kanban.domain.Task
+import com.johansouplis.kanban.domain.enterBacklog
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +31,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /** STARTING until the saved board is known, WELCOME to create or join one, BOARD once linked. */
 enum class Phase { STARTING, WELCOME, BOARD }
@@ -49,7 +56,14 @@ class BoardViewModel(app: Application) : AndroidViewModel(app) {
     private val legacy = LegacyBoard(File(app.filesDir, "board.json"))
     private val lock = Mutex()
     private var board: Board? = null
+    private var boardId: String? = null
     private var listener: ListenerRegistration? = null
+
+    /** Bytes of attachments added in the open editor, written only when the task is saved. */
+    private val drafts = ConcurrentHashMap<String, ByteArray>()
+    private val files = object : LruCache<String, ByteArray>(16 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: ByteArray) = value.size
+    }
 
     private val _state = MutableStateFlow(BoardUiState(lastCalendarKey = settings.lastCalendarKey))
     val state = _state.asStateFlow()
@@ -79,12 +93,52 @@ class BoardViewModel(app: Application) : AndroidViewModel(app) {
     fun save(task: Task) {
         task.reminder?.let { settings.lastCalendarKey = it.calendarKey }
         _state.update { it.copy(lastCalendarKey = settings.lastCalendarKey) }
-        onBoard { it.save(if (task.createdAt == 0L) task.copy(createdAt = System.currentTimeMillis()) else task) }
+        val added = task.attachments.mapNotNull { a -> drafts[a.id]?.let { a.id to it } }
+        discardDrafts()
+        onBoard { board ->
+            val boardId = boardId ?: return@onBoard
+            added.forEach { (id, bytes) ->
+                files.put(id, bytes)
+                remote.putFile(boardId, task.id, id, bytes)
+            }
+            val before = board.tasks.find { it.id == task.id }?.attachments.orEmpty()
+            (before - task.attachments.toSet()).forEach { remote.deleteFile(boardId, it.id) }
+            val created = if (task.createdAt == 0L) task.copy(createdAt = System.currentTimeMillis()) else task
+            board.save(enterBacklog(created, board.tasks))
+        }
     }
 
-    fun move(id: String, column: Column) = onBoard { it.move(id, column) }
+    fun move(id: String, column: Column) = onBoard { board ->
+        board.tasks.find { it.id == id }?.let { board.save(enterBacklog(it.copy(column = column), board.tasks)) }
+    }
 
-    fun delete(id: String) = onBoard { it.delete(id) }
+    /** Undoes a move: back to [previous]'s column and backlog place. */
+    fun restore(previous: Task) = onBoard { board ->
+        board.tasks.find { it.id == previous.id }?.let { board.save(it.copy(column = previous.column, rank = previous.rank)) }
+    }
+
+    fun reorder(ranks: Map<String, Double>) = onBoard { board ->
+        ranks.forEach { (id, rank) -> board.tasks.find { it.id == id }?.let { board.save(it.copy(rank = rank)) } }
+    }
+
+    fun delete(id: String) = onBoard { board ->
+        val boardId = boardId ?: return@onBoard
+        board.tasks.find { it.id == id }?.attachments?.forEach { remote.deleteFile(boardId, it.id) }
+        board.delete(id)
+    }
+
+    suspend fun importAttachment(uri: Uri): Import = withContext(Dispatchers.IO) {
+        importAttachment(getApplication(), uri).also { if (it is Import.Done) drafts[it.attachment.id] = it.bytes }
+    }
+
+    suspend fun attachmentBytes(attachment: Attachment): ByteArray? {
+        drafts[attachment.id]?.let { return it }
+        files.get(attachment.id)?.let { return it }
+        val boardId = boardId ?: return null
+        return remote.readFile(boardId, attachment.id)?.also { files.put(attachment.id, it) }
+    }
+
+    fun discardDrafts() = drafts.clear()
 
     override fun onCleared() {
         listener?.remove()
@@ -112,6 +166,7 @@ class BoardViewModel(app: Application) : AndroidViewModel(app) {
     private fun open(link: BoardLink, uid: String) {
         val board = Board(calendar, remote.repository(link.boardId, uid), uid, settings.pending)
         this.board = board
+        boardId = link.boardId
         _state.update { it.copy(phase = Phase.BOARD, joinCode = link.joinCode, busy = false, error = null) }
         listener = remote.listen(link.boardId) { tasks -> onBoard { it.receive(tasks) } }
     }

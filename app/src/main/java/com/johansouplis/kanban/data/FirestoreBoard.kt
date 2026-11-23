@@ -1,9 +1,11 @@
 package com.johansouplis.kanban.data
 
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.Blob
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import com.johansouplis.kanban.domain.Attachment
 import com.johansouplis.kanban.domain.Column
 import com.johansouplis.kanban.domain.EventPlacement
 import com.johansouplis.kanban.domain.Reminder
@@ -24,7 +26,8 @@ fun normalizeJoinCode(input: String) = input.uppercase().filter { it in JOIN_COD
 
 /**
  * Layout, mirrored by `firestore.rules`:
- * `boards/{boardId}` {joinCode, members, createdAt}, `joinCodes/{code}` {boardId}, `boards/{boardId}/tasks/{taskId}`.
+ * `boards/{boardId}` {joinCode, members, createdAt}, `joinCodes/{code}` {boardId}, `boards/{boardId}/tasks/{taskId}`,
+ * `boards/{boardId}/files/{attachmentId}` {taskId, data}. Files sit apart so that listening to the tasks never downloads them.
  * Firestore keeps its own offline cache: writes apply locally at once and reach the server when the network allows.
  */
 class FirestoreBoard {
@@ -71,7 +74,22 @@ class FirestoreBoard {
         }
     }
 
+    fun putFile(boardId: String, taskId: String, attachmentId: String, bytes: ByteArray) {
+        files(boardId).document(attachmentId).set(mapOf("taskId" to taskId, "data" to Blob.fromBytes(bytes)))
+    }
+
+    fun deleteFile(boardId: String, attachmentId: String) {
+        files(boardId).document(attachmentId).delete()
+    }
+
+    /** Null when the file is neither cached on this phone nor reachable. */
+    suspend fun readFile(boardId: String, attachmentId: String): ByteArray? = runCatching {
+        network { files(boardId).document(attachmentId).get().await() }.getBlob("data")?.toBytes()
+    }.getOrNull()
+
     private fun tasks(boardId: String) = db.collection("boards").document(boardId).collection("tasks")
+
+    private fun files(boardId: String) = db.collection("boards").document(boardId).collection("files")
 
     private suspend fun <T> network(block: suspend () -> T): T = withTimeout(NETWORK_TIMEOUT_MILLIS) { block() }
 }
@@ -85,6 +103,8 @@ fun taskFields(task: Task): Map<String, Any?> = mapOf(
     },
     "event" to task.event?.let { mapOf("calendarKey" to it.calendarKey, "placedBy" to it.placedBy) },
     "createdAt" to task.createdAt,
+    "rank" to task.rank,
+    "attachments" to task.attachments.map { mapOf("id" to it.id, "name" to it.name, "mimeType" to it.mimeType, "size" to it.size) },
 )
 
 /** Null for a document this version cannot read, so one bad task does not hide the board. */
@@ -109,5 +129,18 @@ fun taskFromFields(id: String, fields: Map<String, Any?>): Task? {
         reminder = reminder,
         event = event,
         createdAt = (fields["createdAt"] as? Number)?.toLong() ?: 0,
+        rank = (fields["rank"] as? Number)?.toDouble() ?: 0.0,
+        attachments = (fields["attachments"] as? List<*>).orEmpty().mapNotNull(::attachmentFromFields),
+    )
+}
+
+/** Null for an entry this version cannot read: the task stays, without it. */
+private fun attachmentFromFields(fields: Any?): Attachment? {
+    val map = fields as? Map<*, *> ?: return null
+    return Attachment(
+        id = map["id"] as? String ?: return null,
+        name = map["name"] as? String ?: return null,
+        mimeType = map["mimeType"] as? String ?: return null,
+        size = (map["size"] as? Number)?.toInt() ?: return null,
     )
 }
