@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "000000000000",
-    "project_id": "kanban-placeholder",
-    "storage_bucket": "kanban-placeholder.firebasestorage.app"
+    "project_number": "516396917547",
+    "project_id": "kanban-89091",
+    "storage_bucket": "kanban-89091.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
+        "mobilesdk_app_id": "1:516396917547:android:e7132e85134a8dadb69b6e",
         "android_client_info": {
           "package_name": "com.johansouplis.kanban"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyPLACEHOLDER-REPLACE-WITH-REAL-CONFIG"
+          "current_key": "AIzaSyDVvR39wOjXFJFB-h8QtUe2WV5xyuwAgG4"
         }
       ],
       "services": {

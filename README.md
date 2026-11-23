@@ -62,7 +62,7 @@ Règles suivies pour éviter les doublons :
 
 ## Configurer Firebase (une fois)
 
-Le dépôt contient un `app/google-services.json` factice (projet `kanban-placeholder`) pour que la compilation passe. Un APK compilé avec lui ne peut ni se connecter ni partager : il faut le remplacer par celui du vrai projet.
+Le projet Firebase est `kanban-89091` (compte Google de Johan, forfait gratuit Spark) et `app/google-services.json` est sa config. Pour le recréer de zéro :
 
 1. Sur https://console.firebase.google.com, **Ajouter un projet** (par exemple « Kanban »). Google Analytics n'est pas nécessaire. Le forfait gratuit Spark suffit.
 2. **Build > Authentication > Commencer**, onglet **Méthode de connexion** : activer **Anonyme** et enregistrer.
